@@ -169,7 +169,7 @@ func publish(c *cli.Context) error {
 		streamName,
 		data,
 		// TODO: allow setting another ACK policy.
-		lift.AckPolicyAll(),
+		lift.AckPolicyLeader(),
 	)
 	if err != nil && err != lift.ErrStreamExists {
 		return fmt.Errorf("publication failed: %w", err)
