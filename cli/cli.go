@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	lift "github.com/liftbridge-io/go-liftbridge"
+	lift "github.com/liftbridge-io/go-liftbridge/v2"
 	liftApi "github.com/liftbridge-io/liftbridge-api/go"
 	"github.com/urfave/cli/v2"
 )

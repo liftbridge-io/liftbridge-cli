@@ -174,5 +174,5 @@ func TestPublicationNonExisting(t *testing.T) {
 
 	err := Run(args)
 	require.Error(t, err)
-	require.True(t, strings.Contains(err.Error(), "no such stream: "+streamName))
+	require.True(t, strings.HasSuffix(err.Error(), lift.ErrNoSuchPartition.Error()))
 }
