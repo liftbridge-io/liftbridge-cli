@@ -498,11 +498,11 @@ func metadata(c *cli.Context) error {
 	fmt.Printf("last updated:\n %v\n", metadata.LastUpdated())
 
 	fmt.Printf("streams:\n")
-	for sk, sv := range metadata.Streams() {
-		fmt.Printf(" %v\n", sk)
+	for _, sv := range metadata.Streams() {
+		fmt.Printf(" %v (subject: %v)\n", sv.Name(), sv.Subject())
 		fmt.Printf("  partitions:\n")
 		for pk, pv := range sv.Partitions() {
-			fmt.Printf("   %v (ID %v)\n", pk, pv.ID())
+			fmt.Printf("   %v (ID: %v)\n", pk, pv.ID())
 			fmt.Printf("    leader:\n     %v\n", brokerString(pv.Leader()))
 			fmt.Printf("    ISRs:\n")
 			for _, isr := range pv.ISR() {
