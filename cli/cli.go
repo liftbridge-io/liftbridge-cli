@@ -44,6 +44,22 @@ var (
 		Aliases: []string{"c"},
 		Usage:   "create the stream if it doesn't exist",
 	}
+	readonlyFlag = &cli.BoolFlag{
+		Name:    "readonly",
+		Aliases: []string{"r"},
+		Usage:   "set the stream as readonly",
+		Value:   true,
+	}
+	resumeAllFlag = &cli.BoolFlag{
+		Name:    "resume-all",
+		Aliases: []string{"r"},
+		Usage:   "resume all partitions if one of them is published to instead of resuming only that partition",
+	}
+	partitionsFlag = &cli.IntSliceFlag{
+		Name:    "partitions",
+		Aliases: []string{"p"},
+		Usage:   "targeted partitions",
+	}
 
 	subscribeCommand = &cli.Command{
 		Name:    "subscribe",
@@ -75,6 +91,40 @@ var (
 			streamFlag,
 		},
 	}
+	setReadonlyCommand = &cli.Command{
+		Name:    "set-readonly",
+		Aliases: []string{"r"},
+		Usage:   "Set a stream as readonly",
+		Action:  setReadonly,
+		Flags: []cli.Flag{
+			createStreamFlag,
+			streamFlag,
+			readonlyFlag,
+			partitionsFlag,
+		},
+	}
+	pauseCommand = &cli.Command{
+		Name:    "pause",
+		Aliases: []string{"u"},
+		Usage:   "Pause a stream",
+		Action:  pause,
+		Flags: []cli.Flag{
+			createStreamFlag,
+			streamFlag,
+			resumeAllFlag,
+			partitionsFlag,
+		},
+	}
+	deleteCommand = &cli.Command{
+		Name:    "delete",
+		Aliases: []string{"d"},
+		Usage:   "Delete a stream",
+		Action:  delete,
+		Flags: []cli.Flag{
+			createStreamFlag,
+			streamFlag,
+		},
+	}
 	metadataCommand = &cli.Command{
 		Name:    "metadata",
 		Aliases: []string{"m"},
@@ -90,6 +140,16 @@ func connectToEndpoint(address string) (lift.Client, error) {
 	}
 
 	return client, nil
+}
+
+func ensureStreamCreated(ctx context.Context, client lift.Client, streamName string) error {
+	// TODO: allow specifying the subject name.
+	err := client.CreateStream(ctx, streamName+"subject", streamName)
+	if err != nil && err != lift.ErrStreamExists {
+		return fmt.Errorf("stream creation failed for stream %v: %w", streamName, err)
+	}
+
+	return nil
 }
 
 // subscribeToStream subscribes to a channel and blocks until an error occurs.
@@ -108,10 +168,8 @@ func subscribeToStream(
 	defer cancel()
 
 	if createStream {
-		// TODO: allow specifying the subject name.
-		err = client.CreateStream(ctx, streamName+"subject", streamName)
-		if err != nil && err != lift.ErrStreamExists {
-			return fmt.Errorf("stream creation failed for stream %v: %w", streamName, err)
+		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+			return err
 		}
 	}
 
@@ -192,10 +250,8 @@ func publish(c *cli.Context) error {
 	streamName := c.String(streamFlag.Name)
 
 	if c.Bool(createStreamFlag.Name) {
-		// TODO: allow specifying the subject name.
-		err = client.CreateStream(ctx, streamName+"subject", streamName)
-		if err != nil && err != lift.ErrStreamExists {
-			return fmt.Errorf("stream creation failed for stream %v: %w", streamName, err)
+		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+			return err
 		}
 	}
 
@@ -210,6 +266,111 @@ func publish(c *cli.Context) error {
 	)
 	if err != nil && err != lift.ErrStreamExists {
 		return fmt.Errorf("publication failed: %w", err)
+	}
+
+	return nil
+}
+
+func intToInt32Slice(slice []int) []int32 {
+	result := make([]int32, 0, len(slice))
+	for _, value := range slice {
+		result = append(result, int32(value))
+	}
+	return result
+}
+
+func setReadonly(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("set readonly failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+
+	if c.Bool(createStreamFlag.Name) {
+		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+			return err
+		}
+	}
+
+	readonly := c.Bool(readonlyFlag.Name)
+	partitions := c.IntSlice(partitionsFlag.Name)
+	err = client.SetStreamReadonly(
+		ctx,
+		streamName,
+		lift.Readonly(readonly),
+		lift.ReadonlyPartitions(intToInt32Slice(partitions)...),
+	)
+	if err != nil {
+		return fmt.Errorf("set readonly failed: %w", err)
+	}
+
+	return nil
+}
+
+func pause(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("pause failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+
+	if c.Bool(createStreamFlag.Name) {
+		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+			return err
+		}
+	}
+
+	var opts []lift.PauseOption
+	if c.Bool(resumeAllFlag.Name) {
+		opts = append(opts, lift.ResumeAll())
+	}
+
+	partitions := c.IntSlice(partitionsFlag.Name)
+	opts = append(opts, lift.PausePartitions(intToInt32Slice(partitions)...))
+
+	err = client.PauseStream(
+		ctx,
+		streamName,
+		opts...,
+	)
+	if err != nil {
+		return fmt.Errorf("pause failed: %w", err)
+	}
+
+	return nil
+}
+
+func delete(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("delete failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+
+	if c.Bool(createStreamFlag.Name) {
+		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+			return err
+		}
+	}
+
+	err = client.DeleteStream(
+		ctx,
+		streamName,
+	)
+	if err != nil {
+		return fmt.Errorf("delete failed: %w", err)
 	}
 
 	return nil
@@ -276,6 +437,9 @@ func Run(args []string) error {
 			subscribeCommand,
 			subscribeActivityStreamCommand,
 			publishCommand,
+			setReadonlyCommand,
+			pauseCommand,
+			deleteCommand,
 			metadataCommand,
 		},
 	}
