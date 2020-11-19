@@ -32,6 +32,12 @@ var (
 		Usage:   "use `STREAM`",
 		Value:   defaultStreamName,
 	}
+	subjectFlag = &cli.StringFlag{
+		Name:        "subject",
+		Aliases:     []string{"u"},
+		Usage:       "subject name to use when creating the stream",
+		DefaultText: "same as the stream name",
+	}
 	// TODO: allow specifying multiple messages.
 	messageFlag = &cli.StringFlag{
 		Name:    "message",
@@ -61,6 +67,16 @@ var (
 		Usage:   "targeted partitions",
 	}
 
+	createCommand = &cli.Command{
+		Name:    "create",
+		Aliases: []string{"c"},
+		Usage:   "Creates a stream",
+		Action:  create,
+		Flags: []cli.Flag{
+			streamFlag,
+			subjectFlag,
+		},
+	}
 	subscribeCommand = &cli.Command{
 		Name:    "subscribe",
 		Aliases: []string{"s"},
@@ -69,6 +85,7 @@ var (
 		Flags: []cli.Flag{
 			createStreamFlag,
 			streamFlag,
+			subjectFlag,
 		},
 	}
 	subscribeActivityStreamCommand = &cli.Command{
@@ -76,9 +93,6 @@ var (
 		Aliases: []string{"sas"},
 		Usage:   "Subscribes to the activity stream",
 		Action:  subscribeActivityStream,
-		Flags: []cli.Flag{
-			streamFlag,
-		},
 	}
 	publishCommand = &cli.Command{
 		Name:    "publish",
@@ -89,16 +103,18 @@ var (
 			messageFlag,
 			createStreamFlag,
 			streamFlag,
+			subjectFlag,
 		},
 	}
 	setReadonlyCommand = &cli.Command{
 		Name:    "set-readonly",
 		Aliases: []string{"r"},
-		Usage:   "Set a stream as readonly",
+		Usage:   "Sets a stream as readonly",
 		Action:  setReadonly,
 		Flags: []cli.Flag{
 			createStreamFlag,
 			streamFlag,
+			subjectFlag,
 			readonlyFlag,
 			partitionsFlag,
 		},
@@ -106,11 +122,12 @@ var (
 	pauseCommand = &cli.Command{
 		Name:    "pause",
 		Aliases: []string{"u"},
-		Usage:   "Pause a stream",
+		Usage:   "Pauses a stream",
 		Action:  pause,
 		Flags: []cli.Flag{
 			createStreamFlag,
 			streamFlag,
+			subjectFlag,
 			resumeAllFlag,
 			partitionsFlag,
 		},
@@ -118,11 +135,12 @@ var (
 	deleteCommand = &cli.Command{
 		Name:    "delete",
 		Aliases: []string{"d"},
-		Usage:   "Delete a stream",
+		Usage:   "Deletes a stream",
 		Action:  delete,
 		Flags: []cli.Flag{
 			createStreamFlag,
 			streamFlag,
+			subjectFlag,
 		},
 	}
 	metadataCommand = &cli.Command{
@@ -142,9 +160,12 @@ func connectToEndpoint(address string) (lift.Client, error) {
 	return client, nil
 }
 
-func ensureStreamCreated(ctx context.Context, client lift.Client, streamName string) error {
-	// TODO: allow specifying the subject name.
-	err := client.CreateStream(ctx, streamName+"subject", streamName)
+func ensureStreamCreated(ctx context.Context, client lift.Client, streamName, subjectName string) error {
+	if len(subjectName) == 0 {
+		subjectName = streamName
+	}
+
+	err := client.CreateStream(ctx, subjectName, streamName)
 	if err != nil && err != lift.ErrStreamExists {
 		return fmt.Errorf("stream creation failed for stream %v: %w", streamName, err)
 	}
@@ -154,7 +175,7 @@ func ensureStreamCreated(ctx context.Context, client lift.Client, streamName str
 
 // subscribeToStream subscribes to a channel and blocks until an error occurs.
 func subscribeToStream(
-	streamName string,
+	streamName, subjectName string,
 	handler func(*lift.Message),
 	endPointAddress string,
 	createStream bool,
@@ -168,7 +189,7 @@ func subscribeToStream(
 	defer cancel()
 
 	if createStream {
-		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
 			return err
 		}
 	}
@@ -194,16 +215,41 @@ func subscribeToStream(
 	return <-errC
 }
 
+func create(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("creation failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
+
+	if len(subjectName) == 0 {
+		subjectName = streamName
+	}
+
+	err = client.CreateStream(ctx, subjectName, streamName)
+	if err != nil {
+		return fmt.Errorf("stream creation failed for stream %v: %w", streamName, err)
+	}
+
+	return nil
+}
+
 func subscribe(c *cli.Context) error {
 	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
 
-	return subscribeToStream(streamName, func(message *lift.Message) {
+	return subscribeToStream(streamName, subjectName, func(message *lift.Message) {
 		fmt.Printf("Received message with data: %v, offset: %v\n", string(message.Value()), message.Offset())
 	}, c.String(addressFlag.Name), c.Bool(createStreamFlag.Name))
 }
 
 func subscribeActivityStream(c *cli.Context) error {
-	return subscribeToStream(activityStreamName, func(message *lift.Message) {
+	return subscribeToStream(activityStreamName, "", func(message *lift.Message) {
 		var se liftApi.ActivityStreamEvent
 		err := se.Unmarshal(message.Value())
 		if err != nil {
@@ -235,7 +281,7 @@ func subscribeActivityStream(c *cli.Context) error {
 			activityStr,
 			message.Offset(),
 		)
-	}, c.String(addressFlag.Name), c.Bool(createStreamFlag.Name))
+	}, c.String(addressFlag.Name), false)
 }
 
 func publish(c *cli.Context) error {
@@ -248,9 +294,10 @@ func publish(c *cli.Context) error {
 	defer cancel()
 
 	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
 
 	if c.Bool(createStreamFlag.Name) {
-		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
 			return err
 		}
 	}
@@ -289,9 +336,10 @@ func setReadonly(c *cli.Context) error {
 	defer cancel()
 
 	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
 
 	if c.Bool(createStreamFlag.Name) {
-		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
 			return err
 		}
 	}
@@ -321,9 +369,10 @@ func pause(c *cli.Context) error {
 	defer cancel()
 
 	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
 
 	if c.Bool(createStreamFlag.Name) {
-		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
 			return err
 		}
 	}
@@ -358,9 +407,10 @@ func delete(c *cli.Context) error {
 	defer cancel()
 
 	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
 
 	if c.Bool(createStreamFlag.Name) {
-		if err := ensureStreamCreated(ctx, client, streamName); err != nil {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
 			return err
 		}
 	}
@@ -434,6 +484,7 @@ func Run(args []string) error {
 			addressFlag,
 		},
 		Commands: []*cli.Command{
+			createCommand,
 			subscribeCommand,
 			subscribeActivityStreamCommand,
 			publishCommand,
