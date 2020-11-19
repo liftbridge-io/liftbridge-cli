@@ -16,6 +16,7 @@ const (
 	timeoutDuration     = 3 * time.Second
 	defaultStreamName   = "some-stream"
 	defaultMessageValue = "some-value"
+	defaultCursorID     = "some-cursor"
 )
 
 var (
@@ -65,6 +66,22 @@ var (
 		Name:    "partitions",
 		Aliases: []string{"p"},
 		Usage:   "targeted partitions",
+	}
+	partitionFlag = &cli.IntFlag{
+		Name:    "partition",
+		Aliases: []string{"p"},
+		Usage:   "targeted partition",
+	}
+	cursorIDFlag = &cli.StringFlag{
+		Name:    "cursor-id",
+		Aliases: []string{"i"},
+		Usage:   "cursor id",
+		Value:   defaultCursorID,
+	}
+	offsetFlag = &cli.Int64Flag{
+		Name:    "offset",
+		Aliases: []string{"o"},
+		Usage:   "partition offset",
 	}
 
 	createCommand = &cli.Command{
@@ -148,6 +165,31 @@ var (
 		Aliases: []string{"m"},
 		Usage:   "Fetches metadata",
 		Action:  metadata,
+	}
+	setCursorCommand = &cli.Command{
+		Name:    "set-cursor",
+		Aliases: []string{"e"},
+		Usage:   "Sets a cursor's offset",
+		Action:  setCursor,
+		Flags: []cli.Flag{
+			createStreamFlag,
+			streamFlag,
+			subjectFlag,
+			cursorIDFlag,
+			partitionFlag,
+			offsetFlag,
+		},
+	}
+	fetchCursorCommand = &cli.Command{
+		Name:    "fetch-cursor",
+		Aliases: []string{"f"},
+		Usage:   "Fetches a cursor's offset",
+		Action:  fetchCursor,
+		Flags: []cli.Flag{
+			streamFlag,
+			cursorIDFlag,
+			partitionFlag,
+		},
 	}
 )
 
@@ -476,6 +518,60 @@ func metadata(c *cli.Context) error {
 	return nil
 }
 
+func setCursor(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("setting cursor failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
+
+	if c.Bool(createStreamFlag.Name) {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
+			return err
+		}
+	}
+
+	cursorID := c.String(cursorIDFlag.Name)
+	partition := c.Int(partitionFlag.Name)
+	offset := c.Int64(offsetFlag.Name)
+
+	err = client.SetCursor(ctx, cursorID, streamName, int32(partition), offset)
+	if err != nil {
+		return fmt.Errorf("setting cursor failed: %w", err)
+	}
+
+	return nil
+}
+
+func fetchCursor(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("fetching cursor failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+	cursorID := c.String(cursorIDFlag.Name)
+	partition := c.Int(partitionFlag.Name)
+
+	offset, err := client.FetchCursor(ctx, cursorID, streamName, int32(partition))
+	if err != nil {
+		return fmt.Errorf("stream creation failed for stream %v: %w", streamName, err)
+	}
+
+	fmt.Printf("offset: %v\n", offset)
+
+	return nil
+}
+
+// Run runs the CLI using the provided args.
 func Run(args []string) error {
 	app := &cli.App{
 		Name:  "Liftbridge Command Line Interface",
@@ -492,6 +588,8 @@ func Run(args []string) error {
 			pauseCommand,
 			deleteCommand,
 			metadataCommand,
+			setCursorCommand,
+			fetchCursorCommand,
 		},
 	}
 
