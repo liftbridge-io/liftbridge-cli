@@ -166,6 +166,18 @@ var (
 		Usage:   "Fetches metadata",
 		Action:  metadata,
 	}
+	partitionMetadataCommand = &cli.Command{
+		Name:    "partition-metadata",
+		Aliases: []string{"t"},
+		Usage:   "Fetches a partition's metadata",
+		Action:  partitionMetadata,
+		Flags: []cli.Flag{
+			createStreamFlag,
+			streamFlag,
+			subjectFlag,
+			partitionFlag,
+		},
+	}
 	setCursorCommand = &cli.Command{
 		Name:    "set-cursor",
 		Aliases: []string{"e"},
@@ -501,8 +513,8 @@ func metadata(c *cli.Context) error {
 	for _, sv := range metadata.Streams() {
 		fmt.Printf(" %v (subject: %v)\n", sv.Name(), sv.Subject())
 		fmt.Printf("  partitions:\n")
-		for pk, pv := range sv.Partitions() {
-			fmt.Printf("   %v (ID: %v)\n", pk, pv.ID())
+		for _, pv := range sv.Partitions() {
+			fmt.Printf("   %v \n", pv.ID())
 			fmt.Printf("    leader:\n     %v\n", brokerString(pv.Leader()))
 			fmt.Printf("    ISRs:\n")
 			for _, isr := range pv.ISR() {
@@ -514,6 +526,65 @@ func metadata(c *cli.Context) error {
 			}
 		}
 	}
+
+	return nil
+}
+
+func timeToString(time time.Time) string {
+	if time.IsZero() {
+		return "never"
+	}
+
+	return time.String()
+}
+
+func partitionEventTimestampsToString(timestamp lift.PartitionEventTimestamps) string {
+	return fmt.Sprintf("first: %v, latest: %v", timeToString(timestamp.FirstTime()), timeToString(timestamp.LatestTime()))
+}
+
+func partitionMetadata(c *cli.Context) error {
+	client, err := connectToEndpoint(c.String(addressFlag.Name))
+	if err != nil {
+		return fmt.Errorf("partition metadata fetching failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	streamName := c.String(streamFlag.Name)
+	subjectName := c.String(subjectFlag.Name)
+
+	if c.Bool(createStreamFlag.Name) {
+		if err := ensureStreamCreated(ctx, client, streamName, subjectName); err != nil {
+			return err
+		}
+	}
+
+	partition := c.Int(partitionFlag.Name)
+
+	metadata, err := client.FetchPartitionMetadata(ctx, streamName, int32(partition))
+	if err != nil {
+		return fmt.Errorf("metadata fetching failed: %w", err)
+	}
+
+	// TODO: allow other output formats.
+	fmt.Printf("%v\n", metadata.ID())
+	fmt.Printf(" leader:\n %v\n", brokerString(metadata.Leader()))
+	fmt.Printf(" ISRs:\n")
+	for _, isr := range metadata.ISR() {
+		fmt.Printf("  %v\n", brokerString(isr))
+	}
+	fmt.Printf(" replicas:\n")
+	for _, isr := range metadata.Replicas() {
+		fmt.Printf("  %v\n", brokerString(isr))
+	}
+	fmt.Printf(" high watermark:\n %v\n", metadata.HighWatermark())
+	fmt.Printf(" newest offset:\n %v\n", metadata.NewestOffset())
+	fmt.Printf(" paused:\n %v\n", metadata.Paused())
+	fmt.Printf(" read-only:\n %v\n", metadata.Readonly())
+	fmt.Printf(" message received timestamps:\n %v\n", partitionEventTimestampsToString(metadata.MessagesReceivedTimestamps()))
+	fmt.Printf(" pause timestamps:\n %v\n", partitionEventTimestampsToString(metadata.PauseTimestamps()))
+	fmt.Printf(" read-only timestamps:\n %v\n", partitionEventTimestampsToString(metadata.ReadonlyTimestamps()))
 
 	return nil
 }
@@ -588,6 +659,7 @@ func Run(args []string) error {
 			pauseCommand,
 			deleteCommand,
 			metadataCommand,
+			partitionMetadataCommand,
 			setCursorCommand,
 			fetchCursorCommand,
 		},
