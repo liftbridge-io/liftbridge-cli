@@ -17,6 +17,7 @@ const (
 	defaultStreamName   = "some-stream"
 	defaultMessageValue = "some-value"
 	defaultCursorID     = "some-cursor"
+	defaultAckPolicy    = "leader"
 )
 
 var (
@@ -83,6 +84,12 @@ var (
 		Aliases: []string{"o"},
 		Usage:   "partition offset",
 	}
+	ackPolicyFlag = &cli.StringFlag{
+		Name:    "ack-policy",
+		Aliases: []string{"k"},
+		Usage:   `ack policy, valid values are "leader", "all" or "none"`,
+		Value:   defaultAckPolicy,
+	}
 
 	createCommand = &cli.Command{
 		Name:    "create",
@@ -121,6 +128,7 @@ var (
 			createStreamFlag,
 			streamFlag,
 			subjectFlag,
+			ackPolicyFlag,
 		},
 	}
 	setReadonlyCommand = &cli.Command{
@@ -338,6 +346,19 @@ func subscribeActivityStream(c *cli.Context) error {
 	}, c.String(addressFlag.Name), false)
 }
 
+func ackPolicyStringToAckPolicy(ackPolicy string) (lift.MessageOption, error) {
+	switch ackPolicy {
+	case "leader":
+		return lift.AckPolicyLeader(), nil
+	case "all":
+		return lift.AckPolicyAll(), nil
+	case "none":
+		return lift.AckPolicyNone(), nil
+	default:
+		return nil, fmt.Errorf("invalid ack policy: %v", ackPolicy)
+	}
+}
+
 func publish(c *cli.Context) error {
 	client, err := connectToEndpoint(c.String(addressFlag.Name))
 	if err != nil {
@@ -357,13 +378,16 @@ func publish(c *cli.Context) error {
 	}
 
 	data := []byte(c.String(messageFlag.Name))
+	ackPolicyOption, err := ackPolicyStringToAckPolicy(c.String(ackPolicyFlag.Name))
+	if err != nil {
+		return fmt.Errorf("publication failed: %w", err)
+	}
 
 	_, err = client.Publish(
 		ctx,
 		streamName,
 		data,
-		// TODO: allow setting another ACK policy.
-		lift.AckPolicyLeader(),
+		ackPolicyOption,
 	)
 	if err != nil && err != lift.ErrStreamExists {
 		return fmt.Errorf("publication failed: %w", err)
